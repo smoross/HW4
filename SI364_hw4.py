@@ -9,6 +9,7 @@ from flask_wtf import FlaskForm
 from wtforms import StringField, SubmitField
 from wtforms.validators import Required
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import Column, Integer, String, ForeignKey, Date
 
 # Configure base directory of app
 basedir = os.path.abspath(os.path.dirname(__file__))
@@ -20,7 +21,8 @@ app.config['SECRET_KEY'] = 'hardtoguessstringfromsi364thisisnotsupersecure'
 ## TODO SI364: Create a database in postgresql in the code line below, and fill in your app's database URI. It should be of the format: postgresql://localhost/YOUR_DATABASE_NAME
 
 ## Your Postgres database should be your uniqname, plus HW4, e.g. "jczettaHW4" or "maupandeHW4"
-app.config["SQLALCHEMY_DATABASE_URI"] = ""
+
+app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://localhost/smorossHW4"
 app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN'] = True
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
@@ -29,12 +31,15 @@ manager = Manager(app)
 db = SQLAlchemy(app) # For database use
 
 ## Set up Shell context so it's easy to use the shell to debug
+
 def make_shell_context():
-    return dict(app=app, db=db) ## TODO SI364: Add your models to this shell context function so you can use them in the shell
+    return dict(app=app, db=db, models=models) 
+    ## TODO SI364: Add your models to this shell context function so you can use them in the shell   
     # TODO SI364: Submit a screenshot of yourself using the shell to make a query for all the Tweets in the database.
     # Filling this in will make that easier!
 
 # Add function use to manager
+#manager = Manager(create_app) #do i need this???
 manager.add_command("shell", Shell(make_context=make_shell_context))
 
 
@@ -50,18 +55,46 @@ manager.add_command("shell", Shell(make_context=make_shell_context))
 # Tweet:User - Many:One
 # Tweet:Hashtag - Many:Many
 
+#Association Table between tweet id and hashtag id
+Tweet_Hashtag = db.Table('Tweet_Hashtag', db.Column('tweet_id', db.Integer, db.ForeignKey("tweets.id")), db.Column('hashtag_id', db.Integer, db.ForeignKey("hashtags.id")))
+
 # - Tweet
 ## -- id (Primary Key)
 ## -- text (String, up to 285 chars)
 ## -- user_id (Integer, ID of user posted)
 
+class Tweet(db.Model):
+    __tablename__="tweets"
+    id = db.Column(db.Integer, primary_key=True)
+    text = db.Column(db.String(285))
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    hashtags = db.relationship('Hashtag',secondary=Tweet_Hashtag,backref=db.backref('tweets',lazy='dynamic'),lazy='dynamic')
+
+    def __repr__(self):
+        return "{} by {} | {}".format(self.text,self.user_id, self.hashtags)
+
 # - User
 ## -- id (Primary Key)
 ## -- twitter_username (String, up to 64 chars) (Unique=True)
+class User(db.Model):
+    __tablename__="users"
+    id = db.Column(db.Integer, primary_key=True)
+    twitter_username = db.Column(db.String(64), unique=True)
+    tweets = db.relationship('Tweet', backref='User')
+
+    def __repr__(self):
+        return "{} (ID: {})".format(self.twitter_username,self.id)
 
 # - Hashtag
 ## -- id (Primary Key)
 ## -- text (Unique=True)
+class Hashtag(db.Model):
+    __tablename__="hashtags"
+    id = db.Column(db.Integer, primary_key=True)
+    text = db.Column(db.String, unique=True)
+    tweet_id = db.Column(db.Integer, db.ForeignKey("tweets.id"))
+    hashtag_id = db.Column(db.Integer, db.ForeignKey("hashtags.id"))
+
 
 # Association Table: Tweet_Hashtag
 # -- tweet_id
@@ -79,24 +112,62 @@ manager.add_command("shell", Shell(make_context=make_shell_context))
 ## -- a list of comma-separated hashtags it should have
 
 class TweetForm(FlaskForm):
-    pass
-
+    tweet_text = StringField("What is the text of the tweet?", validators=[Required()])
+    username = StringField("What is the username of the tweeter?",validators=[Required()])
+    hashtags = StringField("List the hashtags this tweet should have (separate each with a comma.)", validators=[Required()])
+    submit = SubmitField('Submit')
 
 ##### Helper functions
 
 ### For database additions / get_or_create functions
 
 ## TODO SI364: Write get_or_create functions for each model -- Tweets, Hashtags, and Users.
-## -- Tweets should be identified by their text and user id,(e.g. if there's already a tweet with that text, by that user, then return it; otherwise, create it)
-## -- Users should be identified by their username (e.g. if there's already a user with that username, return it, otherwise; create it)
-## -- Hashtags should be identified by their text (e.g. if there's already a hashtag with that text, return it; otherwise, create it)
+## -- Tweets should be identified by their text and user id
+#(e.g. if there's already a tweet with that text, by that user, then return it; otherwise, create it)
+def get_or_create_tweet(db_session, tweet_txt, user_id, hashtags_list=[]):
+    tweet=db_session.query(Tweet).filter_by(text=tweet_txt).first()
+    if tweet:
+        return tweet
+    else:
+        tweet= Tweet(text=tweet_txt)
+        user = get_or_create_user(db_session, user_id)
+        #???
+        for hashtag in hashtags_list:
+            hashtag = get_or_create_hashtag(db_session, hashtag)
+            tweet.hashtags.append(hashtag)
+        db_session.add(tweet)
+        db_session.commit()
+    return tweet
 
-## HINT: Your get_or_create_tweet function should invoke your get_or_create_user function AND your get_or_create_hashtag function. You'll have seen an example similar to this in class!
+## -- Users should be identified by their username 
+#(e.g. if there's already a user with that username, return it, otherwise; create it)
+def get_or_create_user(db_session, username):
+    user=db_session.query(User).filter_by(twitter_username=username).first()
+    if user:
+        return user
+    else:
+        user=User(twitter_username=username)
+        db_session.add(user)
+        db_session.commit()
+        return user
 
-## NOTE: If you choose to organize your code differently so it has the same effect of not encounting duplicates / identity errors, that is OK. But writing separate functions that may invoke one another is our primary suggestion.
+## -- Hashtags should be identified by their text 
+#(e.g. if there's already a hashtag with that text, return it; otherwise, create it)
+def get_or_create_hashtag(db_session, hashtag_text):
+    hashtag=db_session.query(Hashtag).filter_by(text=hashtag_text).first()
+    if hashtag:
+        return hashtag
+    else:
+        hashtag=Hashtag(text=hashtag_text)
+        db_session.add(hashtag)
+        db_session.commit()
+        return hashtag
 
+## HINT: Your get_or_create_tweet function should invoke your get_or_create_user function 
+#AND your get_or_create_hashtag function. You'll have seen an example similar to this in class!
 
-
+## NOTE: If you choose to organize your code differently so it has the same effect of not encounting duplicates / identity errors, that is OK. 
+#But writing separate functions that may invoke one another is our primary suggestion.
 
 
 ##### Set up Controllers (view functions) #####
@@ -115,26 +186,42 @@ def internal_server_error(e):
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    pass
+    Tweets= Tweet.query.all()
+    num_tweets = len(tweets)
+    form = TweetForm()
+    if form.validate_on_submit():
+        if db.session.query(Tweet).filter_by(text=form.text.data).first(): # If there's already a song with that title, though...nvm. Gotta add something like "(covered by..)"
+            flash("You've already saved a tweet with that text!")
+        get_or_create_tweet(db.session,form.text.data, form.username.data)
+        return redirect(url_for('see_all_tweets'))
+    return render_template('index.html', form=form,num_tweets=num_tweets)
+
+#'see_all_users' with the number of tweets they have in the database -- ???
+
     ## TODO SI364: Fill in the index route as described.
     # A template index.html has been created and provided to render what this route needs to show -- YOU just need to fill in this view function so it will work.
     ## HINT: Check out the index.html template to make sure you're sending it the data it needs.
 
-
     # The index route should:
     # - Show the Tweet form.
-    # - If you enter a tweet with identical text and username to an existing tweet, it should redirect you to the list of all the tweets and a message that you've already saved a tweet like that.
+    # - If you enter a tweet with identical text and username to an existing tweet, 
+    #it should redirect you to the list of all the tweets and a message that you've already saved a tweet like that.
 
     ## ^ HINT: Invoke your get_or_create_tweet function
     ## ^ HINT: Check out the get_flashed_messages setup in the songs app you saw in class
 
     # This  main page should ALSO show links to pages in the app (see routes below) that:
     # -- allow you to see all of the tweets posted
-    # -- see all of the twitter users you've saved tweets for, along with how many tweets they have in your database
+    # -- see all of the twitter users you've saved tweets for, along with how many tweets they have in your database -- ???
 
 @app.route('/all_tweets')
 def see_all_tweets():
-    pass
+    all_tweets = []
+    tweets = Tweet.query.all()
+    for t in tweets:
+        tweet = Tweet.query.filter_by(id=t.user_id).first()
+        all_tweets.append((t.text,user.username))
+    return render_template('all_tweets.html',all_tweets=all_tweets)
 
     # TODO SI364: Fill in this view function so that it can successfully render the template all_tweets.html, which is provided.
     ## HINT: Check out the all_songs and all_artists routes in the songs app you saw in class.
@@ -142,6 +229,9 @@ def see_all_tweets():
 
 @app.route('/all_users')
 def see_all_users():
+    users = User.query.all()
+    usernames = [(t.twitter_username, len(Tweet.query.filter_by(user_id=t.id).all())) for t in tweet]
+    return render_template('all_users.html',usernames=usernames)
 
     # TODO SI364: Fill in this view function so it can successfully render the template all_users.html, which is provided. (See instructions for more detail.)
     ## HINT: Check out the all_songs and all_artists routes in the songs app you saw in class.
@@ -149,5 +239,6 @@ def see_all_users():
 
 if __name__ == '__main__':
     db.create_all()
-    manager.run() # Run with this: python main_app.py runserver
+    manager.run()
+    # Run with this: python main_app.py runserver
     # Also provides more tools for debugging
